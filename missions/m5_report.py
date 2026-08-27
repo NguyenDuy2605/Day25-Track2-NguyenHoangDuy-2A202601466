@@ -46,10 +46,23 @@ def run(verbose: bool = True) -> dict:
     # --- sustainability snapshot ---
     median_tokens = 800
     wh = sustainability.wh_per_query(median_tokens)
+    # Reasoning energy comparison
+    wh_reasoning = sustainability.wh_per_query(median_tokens, is_reasoning=True)
     sust = {
         "wh_per_query": wh,
+        "wh_per_reasoning_query": wh_reasoning,
         "carbon_g": sustainability.carbon_g(wh, "us-east-1"),
         "best_region": min(sustainability.REGION_CARBON, key=sustainability.REGION_CARBON.get),
+        # Extension 4: Reasoning data
+        "reasoning_pct_req": r2.get("reasoning_pct_req", 0),
+        "reasoning_pct_cost": r2.get("reasoning_pct_cost", 0),
+        "reasoning_pct_wh": r2.get("reasoning_pct_wh", 0),
+        "cap_savings_usd": r2.get("extra_cost_reasoning", 0),
+        # Extension 5: Carbon scheduling data
+        "carbon_savings_total_g": r3.get("carbon_savings_total_g", 0),
+        "carbon_savings_pct": r3.get("carbon_savings_pct", 0),
+        "cleanest_region": r3.get("cleanest_region", "n/a"),
+        "region_comparison": r3.get("region_comparison", []),
     }
 
     md = report.build_report(baseline, optimized, levers, sustainability=sust)

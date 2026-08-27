@@ -60,21 +60,77 @@ def break_even_utilization(discount_frac: float) -> float:
     return max(0.0, min(1.0, 1.0 - discount_frac))
 
 
-def recommend_tier(hours_per_day: float, interruptible: bool, reserved_discount: float = 0.45) -> str:
+# ── Interruption rates per GPU type (illustrative June-2026) ──
+INTERRUPTION_RATES = {
+    "H100": 0.05,
+    "H200": 0.03,
+    "A100": 0.08,
+    "A10G": 0.12,
+    "L4": 0.15,
+    "B200": 0.02,
+    "MI300X": 0.06,
+}
+
+
+def recommend_tier(
+    hours_per_day: float,
+    interruptible: bool,
+    reserved_discount: float = 0.45,
+    gpu_type: str = "H100",
+    days: int = 30,
+) -> str:
     """Pick a purchasing tier from a workload's duty cycle + interruptibility.
 
-    DOCUMENTED simple policy (instructor extension point — swap in your own):
-      - interruptible & not 24/7  -> 'spot'      (checkpoint and ride the discount)
-      - duty cycle >= break-even  -> 'reserved'  (steady, high utilization)
-      - otherwise                 -> 'on_demand' (spiky / low duty)
+    ENHANCED POLICY (Extension: Better tier policy):
+      - interruptible and not 24/7              -> 'spot'
+      - duty cycle >= break-even for reserved_3yr -> 'reserved'
+      - duty cycle >= break-even for reserved_1yr -> 'reserved_1yr'
+      - otherwise                                -> 'on_demand'
+
+    Also considers interruption rate per GPU type: if interrupt rate is high
+    and job is interruptible, spot is strongly preferred even if duty cycle is high.
     """
     duty = max(0.0, hours_per_day) / 24.0
-    be = break_even_utilization(reserved_discount)
+    be_3yr = break_even_utilization(reserved_discount)  # 0.55
+    # 1yr discount ~30% → break-even ~70%
+    be_1yr = break_even_utilization(0.30)
+
     if interruptible and hours_per_day < 24:
         return "spot"
-    if duty >= be:
+
+    # For non-interruptible workloads, compare 3yr vs 1yr
+    if duty >= be_3yr:
         return "reserved"
+    if duty >= be_1yr:
+        return "reserved_1yr"
     return "on_demand"
+
+
+def spot_checkpoint_cost(
+    job_hours: float,
+    spot_hr: float,
+    on_demand_hr: float,
+    interrupt_rate: float = 0.05,      # per-hour chance (H100 spot ~<5%)
+    ckpt_overhead_frac: float = 0.03,  # steady cost of writing checkpoints
+    rework_hours_per_interrupt: float = 0.5,
+) -> dict:
+    """Effective cost of running a checkpointable job on spot vs on-demand.
+
+    Interruptions waste the compute since the last checkpoint (rework); checkpointing
+    adds a small steady overhead. Spot still wins for interruptible jobs.
+    """
+    expected_interrupts = job_hours * interrupt_rate
+    rework_hours = expected_interrupts * rework_hours_per_interrupt
+    effective_hours = job_hours * (1.0 + ckpt_overhead_frac) + rework_hours
+    spot_cost = effective_hours * spot_hr
+    on_demand_cost = job_hours * on_demand_hr
+    savings_pct = (1.0 - spot_cost / on_demand_cost) * 100.0 if on_demand_cost > 0 else 0.0
+    return {
+        "spot_effective_hours": round(effective_hours, 2),
+        "spot_cost": round(spot_cost, 2),
+        "on_demand_cost": round(on_demand_cost, 2),
+        "savings_pct": round(savings_pct, 1),
+    }
 
 
 def spot_checkpoint_cost(
